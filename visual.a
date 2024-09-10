@@ -1,0 +1,508 @@
+!macro message {!pet "Visual Basic Extension installed"}
+
+	!to "visual.bin", cbm
+
+	!source <6502/std.a>		; for +bit16
+	!source <6502/opcodes.a>	; for AND/ORA self-mods
+	!source <cbm/c128/kernal.a>	; for k_primm
+	!source "vdclib.a"	; macros and code parts
+
+; zp
+linnum                      = $16	; uint16 for POKE, PEEK(), etc.
+arg1                        = $84	; actually colors and scale factors for graphics
+arg2                        = $86
+arg3                        = $88
+arg4                        = $8A
+arg5                        = $8B
+arg6                        = $8E
+
+; basic
+b_skip_comma                = $795c	; if comma: skip, otherwise: syntax error
+b_parse_uint16_comma_uint8  = $8803	; read unsigned 16-bit value to linnum, comma, unsigned 8-bit value to X
+b_parse_comma_uint16        = $880f	; skip comma, read unsigned 16-bit value to AAYY (also stored in linnum)
+b_parse_uint16              = $8812	; read unsigned 16-bit value to AAYY (also stored in linnum)
+b_parse_uint8_to_X          = $87f4	; read unsigned 8-bit value to X
+c_copy_rom_font_to_vram     = $c027
+e_set_vdc_registers         = $e1dc	; a kernel routine to set several registers in a row
+
+; addresses in main memory
+m_menufile                  = $fb   ; and $fc. pointer to lb,hb of menu.data file
+m_temp                      = $fd ; temporary calculation space
+m_menudata_length           = $0312 ; and $0313. keeps length of menu data visuals that need to be copied to hidden vram
+                                    ; maybe we can discard this after the initial copy. depends on how recovery should work.
+m_topmenu_length            = $03e4 ; length of top-menu string. needed for VMC to visible VRAM
+m_topmenu_entries           = $03e5 ; nr of entries in the top-menu bar. needed for rolling over menu-selection
+m_menuspec                  = $03e6 ; and $03e7. memory address where menu specs start. 6 bytes per menu entry
+m_topmenu_selected          = $03e8 ; index of current top-menu. $FF for none
+
+
+; addresses in vram
+v_charset1                  = $02a1 ; used for charset address in vram. this is the HB only. LB is always 0
+v_saveram                   = $03e9 ; and $03ea. LB/HB. store screen-ram for recovery at this vram-address
+                                    ; saveram is at m_charset1 + menudata_length
+v_attributeram              = $03eb ; and $03ec. pointer to attribute ram
+
+
+
+* = $1300
+
+    ;sys dec("1300")
+    jmp initialize
+    
+    ;sys dec("1303")
+    jmp show_menu
+
+    ;sys dec("1306")
+    jmp hide_menu
+
+show_menu
+    jsr .top_menu_command
+    ;arg2=199
+    clc
+    lda #199
+    sta arg2
+
+    lda #0
+    sta arg2+1
+
+    jsr vmf
+
+    rts
+
+; show popup/dropdown-menu
+.top_menu_command
+    ;if no top-menu selected ($ff), leave method
+    ldy m_topmenu_selected
+    cmp #$FF
+    beq +++
+
+    ;save area that will be covered by menu
+    ;VMC 80+MD(ME,1),SR,MD(ME,4),MD(ME,3),MD(ME,4),80
+    ; copy from line1+left_offset to SAVE-RAM area
+    ;  copy ME,4 Bytes. do it me,3 times.
+    ;                   increase target address by me,4 bytes
+    ;                   increase source address by 80 bytes (ie 1 line)
+
+
+    ;highlight top-menu entry
+    ;VMF 2048+MD(ME,1),128+64+7,MD(ME,2)
+    ; 2048 = attribute-ram
+    ; md(m_topmenu_selected,n)
+    ; 0(0-1)=offset in menu.data (2 bytes) - start-loc of dropdown-menu in vram
+    ; 1(2)=offset on screen to left border - 1 byte
+    ; 2(3)=length of top-menu entry - 1 byte
+    ; 3(4)=nr lines (equals height) - 1 byte
+    ; 4(5)=line length (equals width) - 1 byte
+
+    ; calculate #2048+MD(ME,1):v_attributeram+menuspec@menuitem*6+2
+    ; at ++, m_temp (and +1) contains m_menuspec plus offset for selected entry
+    lda m_menuspec
+    sta m_temp
+    lda m_menuspec+1
+    sta m_temp+1
+
+    lda m_menuspec
+    ldx m_topmenu_selected      ; counter, how often we need to add 6 to the offset
+-   beq ++                      ; if zero, we're done
+
+    clc
+    adc #$06                    ;add 6 offset per top-menu item
+    sta m_temp
+
+    bcc +
+    inc m_temp+1
+
++   dex
+    jmp -
+
+++  clc
+    lda m_temp                  ;contains menu-spec address
+    adc #$02                    ;we need value 2 (offset from left border)
+    sta m_temp
+
+    lda m_temp+1
+    adc #0
+    sta m_temp+1
+    
+    ;arg1=v_attributeram + m_temp
+    clc
+    ldx #0
+    ldy #0
+    lda #m_temp
+    jsr k_indfet
+    ;adc v_attributeram
+    sta arg1
+
+    lda v_attributeram+1
+    ;lda #0
+    sta arg1+1
+
+    ;arg3=m_temp
+    ldx #0
+    ldy #1
+    lda #m_temp
+    jsr k_indfet
+    sta arg3
+
+    lda #0
+    sta arg3+1
+
+    ;display the menu
+    ;VMC CA+MD(ME,0),80+MD(ME,1),MD(ME,4),MD(ME,3),80
+
++++  rts
+
+; hide popup/dropdown-menu
+hide_menu
+
+    ;de-highlight top-menu entry
+    ;VMF 2048+MD(ME,1),128+7,MD(ME,2)
+    jsr .top_menu_command
+    ;arg2=135
+    clc
+    lda #135
+    sta arg2
+
+    lda #0
+    sta arg2+1
+
+    jsr vmf
+
+    rts
+
+    ;restore previous screen contents
+    ;VMC SR,80+MD(ME,1),MD(ME,4),MD(ME,3),80,MD(ME,4)
+
+
+    rts
+
+initialize
+    jsr .read_charset_address
+    jsr .read_attribute_address
+    jsr .check_file_format
+    jsr .copy_menu_to_vram
+    jsr .load_offsets
+    jsr .setup_screen
+    jsr .display_top_menu
+
+    rts
+
+; copy top-menu from invisible vram to visible vram
+.display_top_menu
+    ;VMC CA,0,ML  - vdclib.a expects HB in arg+1 (A), LB in arg (Y)
+
+    ldy #$00
+    sty arg1
+    lda v_charset1
+    sta arg1+1
+
+    ldy #0
+    sty arg2
+    lda #0
+    sta arg2+1
+
+    ldy m_topmenu_length
+    sty arg3
+    lda #0
+    sta arg3+1
+
+    ldx #$1;
+    stx arg4
+
+    jsr vmc
+
+    rts
+
+; fill background, set charset1 for full screen
+.setup_screen
+    ;set all attribute ram to charset1: vmf 2048 ($800),135 ($87),2000 ($7d0)
+    ldy #$00
+    sty arg1
+    lda #$08
+    sta arg1+1
+
+    ldy #$87
+    sty arg2
+    lda #$00
+    sta arg2+1
+
+    ldy #$d0
+    sty arg3
+    lda #$07
+    sta arg3+1
+
+    jsr vmf
+    
+    ;fill background: vmf 0,63 ($3F),2000 ($7d0)
+    ldy #$00
+    sty arg1
+    lda #$00
+    sta arg1+1
+
+    ldy #$3F
+    sty arg2
+    lda #$00
+    sta arg2+1
+    
+    ldy #$d0
+    sty arg3
+    lda #$07
+    sta arg3+1
+
+    jsr vmf
+    
+    rts
+
+; loads offsets for top-menu and popup-menus
+.load_offsets
+    ;length of top-menu string
+    ;stored at offset m_menufile+4+m_menudata_length
+    clc
+    lda m_menufile
+    adc #4
+    tax
+
+    lda m_menufile+1
+    adc #0
+    tay
+
+    clc
+    txa
+    adc m_menudata_length
+    sta m_temp
+
+    tya
+    adc m_menudata_length+1
+    sta m_temp+1
+
+    ldx #0
+    ldy #0
+    lda #m_temp
+    jsr k_indfet
+    sta m_topmenu_length
+
+    ;nr of entries in top-menu
+    ldx #0
+    iny
+    lda #m_temp
+    jsr k_indfet
+    sta m_topmenu_entries
+
+    ;offset to m_menuspec
+    clc
+    lda m_temp
+    adc #$02
+    sta m_menuspec
+    lda m_temp+1
+    adc #$0
+    sta m_menuspec+1
+
+    ;save-ram for vram recovery (charset1 + menudata_length)
+    clc
+    lda #$0
+    adc m_menudata_length
+    sta v_saveram
+
+    lda v_charset1
+    adc m_menudata_length+1
+    sta v_saveram+1
+
+    rts
+
+; first, get length of menu-data and then copy it to invisible vram (charset1 area)
+; invisible vram location is v_charset1
+.copy_menu_to_vram
+    ; src main ram
+    clc
+    lda m_menufile
+    adc #4
+    sta arg1
+
+    lda m_menufile+1
+    adc #0
+    sta arg1+1
+    
+    ; dest vram
++   lda #0
+    sta arg2
+    lda v_charset1                      ;*32*256
+    sta arg2+1
+
+    ; length
+    lda #m_menufile
+    ldx #0
+    ldy #2
+    jsr k_indfet
+    sta arg3
+    sta m_menudata_length
+    
+    lda #m_menufile
+    ldx #0
+    ldy #3
+    jsr k_indfet
+    sta arg3+1
+    sta m_menudata_length+1
+
+    ;jsr complex_instruction_shared_entry
+    ldy arg2
+    lda arg2 + 1
+    jsr rtv_vtr_swp_shared_setup
+    jsr ram_to_vram
+    ;jmp complex_instruction_shared_exit
+
+    rts
+
+; checks whether the first two bytes are VM
+.check_file_format
+        lda #m_menufile             ;a holds the zp address to where the data is stored
+        ldx #0
+        ldy #0
+        jsr k_indfet
+        cmp #118
+        bne .invalid_file
+        lda #m_menufile
+        ldx #0
+        iny
+        jsr k_indfet
+        cmp #109
+        bne .invalid_file
+        rts
+
+.invalid_file
+        jsr k_primm
+        !pet "Not a VM file"
+        !byte 0
+        rts
+
+; read charset address. 8192 in case of 16 kB
+.read_charset_address 
+        ldx #$1c
+        jsr vdc_reg_X_to_A
+        and #224
+        sta v_charset1
+        rts
+
+.read_attribute_address
+        ldx #$14
+        jsr vdc_reg_X_to_A
+        sta v_attributeram+1
+
+        ldx #$15
+        jsr vdc_reg_X_to_A
+        sta v_attributeram
+
+        rts
+
+;---------- VDC Basic copy/paste routines below ---------
+
+VDCLIB_OPTION_SELFMOD = 1
+VDCLIB_OPTION_BANKING = 1
+
+rtv_vtr_swp_shared_setup
+		jsr AY_to_vdc_regs_18_19
+		ldx #31	; VRAM register
+		stx vdc_reg
+		ldx #0
+		; negate int16 for easier counting:
+		txa
+		sec
+		sbc arg3
+		sta arg3
+		txa
+		sbc arg3 + 1
+		sta arg3 + 1
+		rts	; > X=0 (callers depend on it)
+
+VDC_RAM_READPTR		= arg1
+VDC_RAM_WRITEPTR	= arg2
+VDC_COUNTER		= arg3
+
+vmf ; fill VRAM with value
+;		jsr complex_instruction_shared_entry	; > AAYY = arg3
+
+		; decrement byte counter because the first one will be written manually
+		tya	; take a look at low byte
+		bne +
+		dec arg3 + 1
++		dec arg3
+
+		; clear BLOCK COPY register bit to get BLOCK WRITE:
+		ldx #24
+		jsr vdc_reg_X_to_A
+		and #$7f
+		jsr A_to_vdc_reg_X
+
+		; write first byte
+		lda arg2
+		
+		;set target
+		ldy arg1
+		ldx arg1 + 1
+		jsr A_to_vram_XXYY
+		
+		;set count
+		lda arg3
+		ldy arg3 + 1
+		jsr vdc_do_YYAA_cycles
+
+        rts
+		
+		;jmp complex_instruction_shared_exit
+
++addcode_vdc_read
++addcode_ram_to_vram
+
++addcode_vdc_do_YYAA_cycles
++addcode_A_to_vram_XXYY
+
+vmc ; copy VRAM to VRAM
+		;jsr complex_instruction_block_entry ; > AAYY = arg3
+		
+		; set register bit for BLOCK COPY:
+		ldx #24
+		jsr vdc_reg_X_to_A
+		ora #128
+		jsr A_to_vdc_reg_X
+		; set source
+--		ldy arg1
+		lda arg1 + 1
+		ldx #32
+		jsr AY_to_vdc_regs_Xp1
+		; set target
+-		ldy arg2
+		lda arg2 + 1
+		jsr AY_to_vdc_regs_18_19
+
+		; set count
+		lda arg3
+		ldy arg3 + 1
+		jsr vdc_do_YYAA_cycles
+		
+		dec arg4
+		beq ++
+
+		; increase target address
+		clc
+		lda arg2
+		adc arg5
+		sta arg2
+		
+		bcc +
+		inc arg2+1
+
+		; should source address be increased?
++		lda arg6
+		cmp #0
+		beq - ; no. jump to reading target address
+
+		; increase source address
+		clc
+		adc arg1
+		sta arg1
+
+		bcc --
+		inc arg1+1
+		jmp --
+
+++      rts
+;++		jmp complex_instruction_shared_exit
