@@ -26,7 +26,7 @@ c_copy_rom_font_to_vram     = $c027
 e_set_vdc_registers         = $e1dc	; a kernel routine to set several registers in a row
 
 ; addresses pointing to main memory
-m_mystack                   = $fa  ; like a stack
+m_mystack                   = $fa   ; like a stack
 m_menufile                  = $fb   ; and $fc. pointer to lb,hb of menu.data file
 m_temp                      = $fd   ; and $fe. temporary calculation space
 m_menudata_length           = $0312 ; and $0313. keeps length of menu data visuals that need to be copied to hidden vram
@@ -45,8 +45,6 @@ v_saveram                   = $03ec ; and $03ed. LB/HB. store screen-ram for rec
                                     ; saveram is at m_charset1 + menudata_length
 v_attributeram              = $03ee ; and $03ef. pointer to attribute ram
 
-
-
 * = $1300
 
     ;sys dec("1300")
@@ -64,6 +62,49 @@ v_attributeram              = $03ee ; and $03ef. pointer to attribute ram
     ;sys dec("130c")
     jmp menu_right
 
+    ;sys dec("1312")
+    jmp menu_down
+    
+    ;sys dec("1315")
+    jmp menu_up
+
+menu_up
+    jsr .dehighlight_menuentry
+
+    lda m_menu_entries
+    sta m_mystack
+    dec m_mystack
+    dec m_mystack
+
+    dec m_menuentry_selected
+    bpl +
+
+    ldx m_menu_entries
+    dex
+    dex
+    dex
+    stx m_menuentry_selected
+    
++   jmp .highlight_menuentry
+
+menu_down
+    jsr .dehighlight_menuentry
+
+    lda m_menu_entries
+    sta m_mystack
+    dec m_mystack
+    dec m_mystack
+
+    inc m_menuentry_selected
+
+    lda m_menuentry_selected
+    cmp m_mystack
+    bmi +
+
+    lda #0
+    sta m_menuentry_selected
+    
++   jmp .highlight_menuentry
 
 menu_right
     lda m_topmenu_selected
@@ -84,6 +125,8 @@ menu_right
     ldx #$0
 
 +   stx m_topmenu_selected
+    lda #0
+    sta m_menuentry_selected
 
     jsr show_menu
     rts
@@ -109,6 +152,8 @@ menu_left
     stx m_topmenu_selected
 
 +   stx m_topmenu_selected
+    lda #0
+    sta m_menuentry_selected
 
     jsr show_menu
     rts
@@ -241,7 +286,80 @@ show_menu
     lda #0
     sta arg6
 
-    jmp vmc
+    jsr vmc
+;continues at .highlight_menuentry
+
+
+.highlight_menuentry
+    jsr .menuentry_highlight_prep_1_and_3
+
+    ;arg2=199
+    clc
+    lda #199
+    sta arg2
+
+    lda #0
+    sta arg2+1
+
+    jmp vmf
+
+
+
+.menuentry_highlight_prep_1_and_3
+    ;if no top-menu selected ($ff), leave method
+    ldy m_topmenu_selected
+    cmp #$FF
+    beq +
+
+    jsr .menuspec_to_temp
+    
+    ;arg1=v_attributeram + m_temp
+    jsr .spec_1_to_A
+    
+    clc   
+    adc v_attributeram
+    sta arg1
+
+    lda #0
+    adc v_attributeram+1
+    sta arg1+1
+
+    ;add 161 to arg1. 160 for going below the border, 1 to not highlight the border
+    clc
+    lda arg1
+    adc #161
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
+    ;add 80 per line
++   ldx m_menuentry_selected    ; counter, how often we need to add 80 to the offset
+-   beq ++                      ; if zero, we're done
+
+    clc
+    adc #80                    ;add 80 offset per top-menu item
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   dex
+    jmp -
+
+    ;arg3=m_temp
+    ; load length of menuentries in this topmenu
+++  lda m_menu_entrylength
+    
+    ; minus 1 to the length to cover whitespaces between border and text of menuentry
+    sbc #1
+    sta arg3
+
+    ; arg3 won't exceed 256 bytes, so we just set HB to 0
+    lda #0
+    sta arg3+1
+
++   rts
 
 
 ; hide popup/dropdown-menu
@@ -250,6 +368,8 @@ hide_menu
     cmp #$FF
     bne +
     rts
+    
++   jsr .dehighlight_menuentry
 
     ;de-highlight top-menu entry
     ;VMF 2048+MD(ME,1),128+7,MD(ME,2)
@@ -306,6 +426,20 @@ hide_menu
     sta m_topmenu_selected
 
     rts
+
+.dehighlight_menuentry
+    jsr .menuentry_highlight_prep_1_and_3
+
+    ;arg2=135
+    clc
+    lda #135
+    sta arg2
+
+    lda #0
+    sta arg2+1
+
+    jmp vmf
+
 
 ; show popup/dropdown-menu
 .top_menu_command
