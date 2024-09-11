@@ -130,11 +130,12 @@ show_menu
     jsr .spec_4_to_A
     sta m_menu_entrylength
 
-    jmp +
 
     ;-----------------------------------------------
     ;save area that will be covered by menu for restoring later
-    ;VMC 80+MD(ME,1),SR,MD(ME,4),MD(ME,3),MD(ME,4),80
+    ;VMC 80+MD(ME,1),SR,         MD(ME,4),MD(ME,3),MD(ME,4),80
+    ;display
+    ;VMC CA+MD(ME,0),80+MD(ME,1),MD(ME,4),MD(ME,3),80
     ; copy from line1+left_offset to SAVE-RAM area
     ;  copy ME,4 Bytes. do it me,3 times.
     ;                   increase target address by me,4 bytes
@@ -179,10 +180,8 @@ show_menu
 
     jsr vmc
 
-    ;rts
-
     ; highlight top menuentry
-+   jsr .top_menu_command
+    jsr .top_menu_command
 
     ;arg2=199
     clc
@@ -193,7 +192,6 @@ show_menu
     sta arg2+1
 
     jsr vmf
-    
 
     ;display the menu
     ;VMC CA+MD(ME,0),80+MD(ME,1),MD(ME,4),MD(ME,3),80
@@ -240,6 +238,9 @@ show_menu
     lda #80
     sta arg5
 
+    lda #0
+    sta arg6
+
     jmp vmc
 
 
@@ -263,19 +264,51 @@ hide_menu
 
     jsr vmf
 
-    lda #$ff
-    sta m_topmenu_selected
-
     ;restore previous screen contents
     ;VMC SR,80+MD(ME,1),MD(ME,4),MD(ME,3),80,MD(ME,4)
+    ;arg1 vram-src
+    lda v_saveram
+    sta arg1
 
+    lda v_saveram+1
+    sta arg1+1
+
+    ;arg2 vram-dest
+    jsr .spec_1_to_A
+
+    clc
+    adc #80
+    sta arg2
+
+    lda #0
+    adc #0
+    sta arg2+1
+
+    ;arg3 copy-size
+    lda m_menu_entrylength
+    sta arg3
+    sta arg6
+
+    lda #0
+    sta arg3+1
+
+    ;arg4 repetitions
+    lda m_menu_entries
+    sta arg4
+
+    ;arg5 src-increase per rep
+    lda #80
+    sta arg5
+
+    jsr vmc
+
+    lda #$ff
+    sta m_topmenu_selected
 
     rts
 
 ; show popup/dropdown-menu
 .top_menu_command
-
-
 
     ;highlight top-menu entry
     ;VMF 2048+MD(ME,1),128+64+7,MD(ME,2)
@@ -301,6 +334,7 @@ hide_menu
     ;arg3=m_temp
     jsr .spec_2_to_A
     sta arg3
+    tay
 
     lda #0
     sta arg3+1
@@ -559,7 +593,6 @@ initialize
         !byte 0
         rts
 
-.clear_memory
 .clear_memory
     lda #$0
     sta $03e4
