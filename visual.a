@@ -25,22 +25,25 @@ b_parse_uint8_to_X          = $87f4	; read unsigned 8-bit value to X
 c_copy_rom_font_to_vram     = $c027
 e_set_vdc_registers         = $e1dc	; a kernel routine to set several registers in a row
 
-; addresses in main memory
+; addresses pointing to main memory
+m_mystack                   = $fa  ; like a stack
 m_menufile                  = $fb   ; and $fc. pointer to lb,hb of menu.data file
-m_temp                      = $fd ; temporary calculation space
+m_temp                      = $fd   ; and $fe. temporary calculation space
 m_menudata_length           = $0312 ; and $0313. keeps length of menu data visuals that need to be copied to hidden vram
                                     ; maybe we can discard this after the initial copy. depends on how recovery should work.
 m_topmenu_length            = $03e4 ; length of top-menu string. needed for VMC to visible VRAM
 m_topmenu_entries           = $03e5 ; nr of entries in the top-menu bar. needed for rolling over menu-selection
 m_menuspec                  = $03e6 ; and $03e7. memory address where menu specs start. 6 bytes per menu entry
 m_topmenu_selected          = $03e8 ; index of current top-menu. $FF for none
+m_menuentry_selected        = $03e9 ; index of current menu-entry (inside selected top-menu)
+m_menu_entries              = $03ea ; nr of entries in current menu (used for highlighting after up/down, can be updated on show_menu)
+m_menu_entrylength          = $03eb ; length per entry in current menu (used for highlighting after up/down, can be updated on show_menu)
 
-
-; addresses in vram
+; addresses pointing to vram
 v_charset1                  = $02a1 ; used for charset address in vram. this is the HB only. LB is always 0
-v_saveram                   = $03e9 ; and $03ea. LB/HB. store screen-ram for recovery at this vram-address
+v_saveram                   = $03ec ; and $03ed. LB/HB. store screen-ram for recovery at this vram-address
                                     ; saveram is at m_charset1 + menudata_length
-v_attributeram              = $03eb ; and $03ec. pointer to attribute ram
+v_attributeram              = $03ee ; and $03ef. pointer to attribute ram
 
 
 
@@ -55,8 +58,132 @@ v_attributeram              = $03eb ; and $03ec. pointer to attribute ram
     ;sys dec("1306")
     jmp hide_menu
 
+    ;sys dec("1309")
+    jmp menu_left
+
+    ;sys dec("130c")
+    jmp menu_right
+
+
+menu_right
+    lda m_topmenu_selected
+    cmp #$FF
+    bne +
+    rts
+
+    ;hide_menu sets topmenu_selected to $FF
+    ;  so we need to remember this value temporarily
++   sta m_mystack
+    jsr hide_menu
+    
+    ldx m_mystack
+    inx
+    cpx m_topmenu_entries
+    bmi +
+
+    ldx #$0
+
++   stx m_topmenu_selected
+
+    jsr show_menu
+    rts
+
+
+menu_left
+    lda m_topmenu_selected
+    cmp #$FF
+    bne +
+    rts
+
+    ;hide_menu sets topmenu_selected to $FF
+    ;  so we need to remember this value temporarily
++   sta m_mystack
+    jsr hide_menu
+    
+    ldx m_mystack
+    dex
+    bpl +
+
+    ldx m_topmenu_entries
+    dex
+    stx m_topmenu_selected
+
++   stx m_topmenu_selected
+
+    jsr show_menu
+    rts
+
+
 show_menu
-    jsr .top_menu_command
+    lda m_topmenu_selected
+    cmp #$FF
+    bne +
+    rts
+
++   jsr .menuspec_to_temp
+
+    ; load nr of lines into Acc
+    jsr .spec_3_to_A
+    sta m_menu_entries
+
+    ; load line-width int Acc
+    jsr .spec_4_to_A
+    sta m_menu_entrylength
+
+    jmp +
+
+    ;-----------------------------------------------
+    ;save area that will be covered by menu for restoring later
+    ;VMC 80+MD(ME,1),SR,MD(ME,4),MD(ME,3),MD(ME,4),80
+    ; copy from line1+left_offset to SAVE-RAM area
+    ;  copy ME,4 Bytes. do it me,3 times.
+    ;                   increase target address by me,4 bytes
+    ;                   increase source address by 80 bytes (ie 1 line)
+    ;arg1 vram-source
+    jsr .spec_1_to_A
+    sta arg1
+
+    clc
+    adc #80
+    sta arg1
+
+    lda #0
+    adc #0
+    sta arg1+1
+
+    ;arg2 vram-dest
+    lda v_saveram
+    sta arg2
+
+    lda v_saveram+1
+    sta arg2+1
+
+    ;arg3 copy-size
+    lda m_menu_entrylength
+    sta arg3
+    sta arg5
+
+    lda #0
+    sta arg3+1
+
+    ;arg4 repetitions
+    lda m_menu_entries
+    sta arg4
+
+    ;arg5 dest-increase per rep
+    ; stored with arg3
+
+    ;arg6 src-increase per rep
+    lda #80
+    sta arg6
+
+    jsr vmc
+
+    ;rts
+
+    ; highlight top menuentry
++   jsr .top_menu_command
+
     ;arg2=199
     clc
     lda #199
@@ -66,22 +193,88 @@ show_menu
     sta arg2+1
 
     jsr vmf
+    
+
+    ;display the menu
+    ;VMC CA+MD(ME,0),80+MD(ME,1),MD(ME,4),MD(ME,3),80
+    ; CA=8192
+    
+    ;arg1 vram-source
+    ldx #0
+    ldy #0
+    lda #m_temp
+    jsr k_indfet
+    sta arg1
+
+    ldx #0
+    ldy #1
+    lda #m_temp
+    jsr k_indfet
+
+    adc v_charset1
+    sta arg1+1
+
+    ;arg2 vram-dest
+    jsr .spec_1_to_A
+
+    clc
+    adc #80
+    sta arg2
+
+    lda #0
+    adc #0
+    sta arg2+1
+
+    ;arg3 copy-size
+    lda m_menu_entrylength
+    sta arg3
+
+    lda #0
+    sta arg3+1
+
+    ;arg4 repetitions
+    lda m_menu_entries
+    sta arg4
+
+    ;arg5 dest-address inc per rep
+    lda #80
+    sta arg5
+
+    jmp vmc
+
+
+; hide popup/dropdown-menu
+hide_menu
+    lda m_topmenu_selected
+    cmp #$FF
+    bne +
+    rts
+
+    ;de-highlight top-menu entry
+    ;VMF 2048+MD(ME,1),128+7,MD(ME,2)
++   jsr .top_menu_command
+    ;arg2=135
+    clc
+    lda #135
+    sta arg2
+
+    lda #0
+    sta arg2+1
+
+    jsr vmf
+
+    lda #$ff
+    sta m_topmenu_selected
+
+    ;restore previous screen contents
+    ;VMC SR,80+MD(ME,1),MD(ME,4),MD(ME,3),80,MD(ME,4)
+
 
     rts
 
 ; show popup/dropdown-menu
 .top_menu_command
-    ;if no top-menu selected ($ff), leave method
-    ldy m_topmenu_selected
-    cmp #$FF
-    beq +++
 
-    ;save area that will be covered by menu
-    ;VMC 80+MD(ME,1),SR,MD(ME,4),MD(ME,3),MD(ME,4),80
-    ; copy from line1+left_offset to SAVE-RAM area
-    ;  copy ME,4 Bytes. do it me,3 times.
-    ;                   increase target address by me,4 bytes
-    ;                   increase source address by 80 bytes (ie 1 line)
 
 
     ;highlight top-menu entry
@@ -93,9 +286,33 @@ show_menu
     ; 2(3)=length of top-menu entry - 1 byte
     ; 3(4)=nr lines (equals height) - 1 byte
     ; 4(5)=line length (equals width) - 1 byte
+    ;jsr .menuspec_to_temp
 
-    ; calculate #2048+MD(ME,1):v_attributeram+menuspec@menuitem*6+2
-    ; at ++, m_temp (and +1) contains m_menuspec plus offset for selected entry
+    ;arg1=v_attributeram + m_temp
+    clc
+    jsr .spec_1_to_A
+    ;adc v_attributeram
+    sta arg1
+
+    lda v_attributeram+1
+    ;lda #0
+    sta arg1+1
+
+    ;arg3=m_temp
+    jsr .spec_2_to_A
+    sta arg3
+
+    lda #0
+    sta arg3+1
+
+    ;display the menu
+    ;VMC CA+MD(ME,0),80+MD(ME,1),MD(ME,4),MD(ME,3),80
+
+    rts
+
+.menuspec_to_temp
+    ; calculate MD(ME,1) menuspec@menuitem*6+2
+    ; as a result, m_temp (and +1) contains address of m_menuspec plus offset for selected entry
     lda m_menuspec
     sta m_temp
     lda m_menuspec+1
@@ -115,68 +332,36 @@ show_menu
 +   dex
     jmp -
 
-++  clc
-    lda m_temp                  ;contains menu-spec address
-    adc #$02                    ;we need value 2 (offset from left border)
-    sta m_temp
+++  rts
 
-    lda m_temp+1
-    adc #0
-    sta m_temp+1
-    
-    ;arg1=v_attributeram + m_temp
-    clc
+; m_temp must be set via .menuspec_to_temp before calling these
+; offset on screen to left border - 1 byte
+.spec_1_to_A
+    ldy #2
+    jmp .spec_Y_to_A
+
+; length of top-menu entry - 1 byte
+.spec_2_to_A
+    ldy #3
+    jmp .spec_Y_to_A
+
+; nr lines (equals height (plus 2 lines for border)) - 1 byte
+.spec_3_to_A
+    ldy #4
+    jmp .spec_Y_to_A
+
+; line length (equals width (plus 4 for borders and whitespaces)) - 1 byte
+.spec_4_to_A
+    ldy #5
+
+.spec_Y_to_A
     ldx #0
-    ldy #0
     lda #m_temp
     jsr k_indfet
-    ;adc v_attributeram
-    sta arg1
-
-    lda v_attributeram+1
-    ;lda #0
-    sta arg1+1
-
-    ;arg3=m_temp
-    ldx #0
-    ldy #1
-    lda #m_temp
-    jsr k_indfet
-    sta arg3
-
-    lda #0
-    sta arg3+1
-
-    ;display the menu
-    ;VMC CA+MD(ME,0),80+MD(ME,1),MD(ME,4),MD(ME,3),80
-
-+++  rts
-
-; hide popup/dropdown-menu
-hide_menu
-
-    ;de-highlight top-menu entry
-    ;VMF 2048+MD(ME,1),128+7,MD(ME,2)
-    jsr .top_menu_command
-    ;arg2=135
-    clc
-    lda #135
-    sta arg2
-
-    lda #0
-    sta arg2+1
-
-    jsr vmf
-
-    rts
-
-    ;restore previous screen contents
-    ;VMC SR,80+MD(ME,1),MD(ME,4),MD(ME,3),80,MD(ME,4)
-
-
     rts
 
 initialize
+    jsr .clear_memory
     jsr .read_charset_address
     jsr .read_attribute_address
     jsr .check_file_format
@@ -373,6 +558,27 @@ initialize
         !pet "Not a VM file"
         !byte 0
         rts
+
+.clear_memory
+.clear_memory
+    lda #$0
+    sta $03e4
+    sta $03e5
+    sta $03e6
+    sta $03e7
+    sta $03e8
+    sta $03e9
+    sta $03ea
+    sta $03eb
+    sta $03ec
+    sta $03ed
+    sta $03ee
+    sta $03ef
+
+    lda #$ff
+    sta m_topmenu_selected
+
+    rts
 
 ; read charset address. 8192 in case of 16 kB
 .read_charset_address 
