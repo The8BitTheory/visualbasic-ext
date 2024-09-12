@@ -27,8 +27,9 @@ e_set_vdc_registers         = $e1dc	; a kernel routine to set several registers 
 
 ; addresses pointing to main memory
 m_mystack                   = $fa   ; like a stack
+m_mystack2                  = $8f
 m_menufile                  = $fb   ; and $fc. pointer to lb,hb of menu.data file
-m_temp                      = $fd   ; and $fe. temporary calculation space
+m_temp                      = $fd   ; and $fe. used to keep offset to data of current menuitem or form element
 m_menudata_length           = $0312 ; and $0313. keeps length of menu data visuals that need to be copied to hidden vram
                                     ; maybe we can discard this after the initial copy. depends on how recovery should work.
 m_topmenu_length            = $03e4 ; length of top-menu string. needed for VMC to visible VRAM
@@ -39,11 +40,55 @@ m_menuentry_selected        = $03e9 ; index of current menu-entry (inside select
 m_menu_entries              = $03ea ; nr of entries in current menu (used for highlighting after up/down, can be updated on show_menu)
 m_menu_entrylength          = $03eb ; length per entry in current menu (used for highlighting after up/down, can be updated on show_menu)
 
+m_form_offset               = $3fd  ; and $3fe. 
+
 ; addresses pointing to vram
 v_charset1                  = $02a1 ; used for charset address in vram. this is the HB only. LB is always 0
 v_saveram                   = $03ec ; and $03ed. LB/HB. store screen-ram for recovery at this vram-address
                                     ; saveram is at m_charset1 + menudata_length
 v_attributeram              = $03ee ; and $03ef. pointer to attribute ram
+
+; offsets
+    ; 0(0-1)=offset in menu.data (2 bytes) - start-loc of dropdown-menu in vram
+    ; 1(2)=offset on screen to left border - 1 byte
+    ; 2(3)=length of top-menu entry - 1 byte
+    ; 3(4)=nr lines (equals height) - 1 byte
+    ; 4(5)=line length (equals width) - 1 byte
+o_menuspec                  = 0
+o_topmenu_indent            = 2
+o_topmenu_length            = 3
+o_menu_height               = 4
+o_menu_width                = 5
+
+; file format
+; 0-1: format bytes (VM)
+; 2-3: length of menu-visuals (that's what needs to be copied to vram, starting at byte #4)
+; 4-n: menu visuals
+; n+1: length of top-menu string (ie the full visual menu-line string on top)
+; n+2: nr of top-menu entries
+; m (=n+3): data for menu-dropdowns. each menu has 6 bytes of data.
+; m0-1: menu visuals for menu-dropdown (ie the border and menu entries and maybe hotkey bindings)
+; m2:   indentation of top-menu from left screen border
+; m3:   length of top-menu entry of this menu. needed for highlighting open menu
+; m4:   height of menu-dropdown in lines (includes top and bottom border)
+; m5:   width of menu-dropdown in chars (includes left and right borders and one additional whitespace between text and border on each side)
+
+; f0-1: format bytes (VF)
+
+; FRAME
+; f0: ID (auto-incrementing number, used at runtime)
+; f1: ui-element-type-id 1
+; f2: x-pos
+; f3: y-pos
+; f4: width
+; f5: height
+; f6: has menu
+; f7: caption-length
+; f8-n: caption-string
+
+
+; end: VE+00
+
 
 * = $1300
 
@@ -62,12 +107,330 @@ v_attributeram              = $03ee ; and $03ef. pointer to attribute ram
     ;sys dec("130c")
     jmp menu_right
 
-    ;sys dec("1312")
+    ;sys dec("131f")
     jmp menu_down
     
-    ;sys dec("1315")
+    ;sys dec("1312")
     jmp menu_up
 
+    ;sys dec("1315")
+    jmp draw_form_element
+
+
+draw_form_element
+    ; get offset of current form-element
+    lda m_form_offset
+    sta m_temp
+    lda m_form_offset+1
+    sta m_temp+1
+
+    ; get element-type (at element-offset +1)
+    ldx #0
+    ldy #1
+    lda #m_temp
+    jsr k_indfet
+
+    cmp #1
+    bne +
+    jsr k_primm
+    !pet "Drawing Frame"
+    !byte 0
+    jmp draw_frame
+
+    ; if type=frame then goto draw_frame
++   jsr k_primm
+    !pet "Unknown UI-Element"
+    !byte 0
+    rts
+
+draw_frame
+    ; m_temp contains offset to current form element
+
+    ; frame drawing:
+    ; - top-left character, eg ╔
+    ; - left border, eg ║ for height-2 times (-1 for top border element, -1 for bottom border-element)
+    ; - bottom-left character, eg ╚
+
+    ; load width and decrease by 1.
+    ldx #0
+    ldy #4
+    lda #m_temp
+    jsr k_indfet
+    sbc #1
+    sta m_mystack
+
+    lda #0
+    sta arg1
+    sta arg1+1
+
+    ; calculate address for top-left frame element
+    ; arg1 = xpos + ypos*80
+    ; load xpos
+    ldx #0
+    ldy #2
+    lda #m_temp
+    jsr k_indfet
+    sta arg1
+
+    ; load ypos
+    ldx #0
+    ldy #3
+    lda #m_temp
+    jsr k_indfet
+
+    ; ypos * 80 
+    tax    ; use y as counter, how often we need to add 80 to the offset.
+-   beq ++                      ; if zero, we're done
+
+    clc
+    lda arg1
+    adc #80                    ;add 80 offset per y-koordinate
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   dex
+    jmp -    
+
+    ; top-left corner character
+++  lda #$70
+    sta arg2
+
+    ; draw top-left corner border element
+    jsr vmw
+
+    rts
+
+    jmp skip
+
+    ;push current address to stack
+    lda arg1
+    pha
+    lda arg1+1
+    pha
+
+    ;------------------ draw caption
+    ;x-pos = (frame width - caption length) / 2
+
+    ; load caption-length
+    ldx #0
+    ldy #7
+    lda #m_temp
+    jsr k_indfet
+    sta m_mystack2
+
+    sec
+    lda m_mystack
+    sbc m_mystack2
+    sta arg1
+
+    bcs +
+    dec arg1+1
+
+    clc
+    lda arg1+1
+    lsr             ;sets the carry flag, if lowest bit was a 1
+    sta arg1+1
+
+    lda arg1
+    bcs +           
+    lsr             ;if lsr did not push lowest-bit 1 out, just shift-right the LB as well
+    sta arg1
+    jmp ++
+
++   lsr             ;if lsr did push a 1-bit to carry, set that 1 as highest bit on the LB
+    and #128
+    sta arg1
+
+    ; arg1 contains the x/y-pos of the caption
+
+    ; load address of caption-string
+++  ldy #8
+    dec m_mystack2     ;m_mystack2 holds length of the caption. decrease by 1 to have a correct stop condition
+
+-   ldx #0
+    lda #m_temp
+    jsr k_indfet
+    
+    jsr $ffd2
+    iny
+    dec m_mystack2
+    bpl -
+
+
+    ; add right border offset    
+    pla
+    sta arg1+1
+    pla
+    sta arg1
+
+skip    clc
+    lda arg1
+    adc m_mystack
+    sta arg1
+
+    jsr k_primm
+    !pet "Before draw top-right corner"
+    !byte 0
+
+
+    bcc +
+    inc arg1+1
+
+    lda #$6e
+    sta arg2
+
+    ; draw top-right corner border element
++   jsr vmw
+
+    ; remove right border offset
+    sec
+    lda arg1
+    sbc m_mystack
+    sta arg1
+
+    bcs +
+    dec arg1+1
+    
+
+    ; draw left border. starts one below the previous address and writes a single byte per line until height is reached
+    ; arg1 = previous arg1+80
+    ; arg2 = character for border element
+    ; repeat for height-2 times (X-reg)
+
+    ; arg2
++   ldy #$5d ; character for border left and right
+    sty arg2
+
+    ; load height for nr of repetitions
+    ldx #0
+    ldy #5
+    lda #m_temp
+    jsr k_indfet
+    tax
+    dex
+    dex ; repeat for (height -2) times
+
+-   beq++
+
+    stx m_mystack2
+
+    ; left border
+    clc
+    lda arg1
+    adc #80
+    sta arg1
+
+    jsr k_primm
+    !pet "Before draw left border element. "
+    !byte 0
+
+    bcc +
+    inc arg1+1
+
+    ; draw left border element
++   jsr vmw
+
+    ; add right-border offset to A
+    clc
+    lda arg1
+    adc m_mystack
+    sta arg1
+
+    jsr k_primm
+    !pet "Before draw right border element. "
+    !byte 0
+
+    bcc +
+    inc arg1+1
+
+    ; draw right border element
++   jsr vmw
+
+    ; restore previous A
+    sec
+    lda arg1
+    sbc m_mystack
+    sta arg1
+
+    bcs +
+    dec arg1+1
+
+    ldx m_mystack2
+
++   dex
+    jmp -
+
+    ; draw bottom-left corner element
+    ; add 80 to previous address
+++  clc
+    lda arg1
+    adc #80
+    sta arg1
+
+    jsr k_primm
+    !pet "before draw bottom-left element"
+    !byte 0
+
+    bcc +
+    inc arg1+1
+
++   lda #$6d ; bottom-left element
+    sta arg2
+
+    jsr vmw
+
+    ; draw bottom line. VMF address+1, char-code $cd, (width-1) times
+    ; increase address by 1
+    clc
+    lda arg1
+    adc #1
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   lda #$40 ; bottom element
+    sta arg2
+
+    ; arg 3: times to fill (subtract 1 to have the correct value)
+    lda m_mystack
+    sbc #1
+    sta arg3
+
+    lda #0
+    sta arg3+1
+
+    jsr k_primm
+    !pet "before draw bottom line"
+    !byte 0
+
+    ; fill line
+    jsr vmf
+
+    ; draw bottom-right corner
+    clc
+    lda arg1
+    adc m_mystack
+    sta arg1
+
+    jsr k_primm
+    !pet "before draw bottom-right corner"
+    !byte 0
+
+    bcc +
+    inc arg1+1
+
++   lda #$7d
+    sta arg2
+
+    jsr vmw
+
+    rts
+
+
+; ---------------------------------- MENU NAVIGATION ---------------------------
 menu_up
     jsr .dehighlight_menuentry
 
@@ -244,13 +607,13 @@ show_menu
     
     ;arg1 vram-source
     ldx #0
-    ldy #0
+    ldy #o_menuspec
     lda #m_temp
     jsr k_indfet
     sta arg1
 
     ldx #0
-    ldy #1
+    ldy #o_menuspec+1
     lda #m_temp
     jsr k_indfet
 
@@ -549,7 +912,7 @@ initialize
     lda v_charset1
     sta arg1+1
 
-    ldy #0
+    ldy #81
     sty arg2
     lda #0
     sta arg2+1
@@ -633,6 +996,16 @@ initialize
     lda #m_temp
     jsr k_indfet
     sta m_topmenu_length
+
+    ; form data starts here ($1a6 hardcoded for now)
+    clc
+    lda #$a6
+    adc m_menufile
+    sta m_form_offset
+
+    lda #$01
+    adc m_menufile+1
+    sta m_form_offset+1
 
     ;nr of entries in top-menu
     ldx #0
@@ -728,6 +1101,9 @@ initialize
         rts
 
 .clear_memory
+    ;sta m_menufile
+    ;stx m_menufile+1
+
     lda #$0
     sta $03e4
     sta $03e5
@@ -879,3 +1255,16 @@ vmc ; copy VRAM to VRAM
 
 ++      rts
 ;++		jmp complex_instruction_shared_exit
+
+vmw ; VRAM location = value
+;		jsr simple_instruction_shared_entry	; >> linnum, X
+
+        ldy arg1
+        ldx arg1+1
+
+        lda arg2
+
+;		txa
+;		ldy linnum
+;		ldx linnum + 1
+		jmp A_to_vram_XXYY
