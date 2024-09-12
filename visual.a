@@ -156,6 +156,8 @@ draw_frame
     ldy #4
     lda #m_temp
     jsr k_indfet
+    
+    sec
     sbc #1
     sta m_mystack
 
@@ -199,91 +201,25 @@ draw_frame
 
     ; draw top-left corner border element
     jsr vmw
-
-    rts
-
-    jmp skip
-
-    ;push current address to stack
-    lda arg1
-    pha
-    lda arg1+1
-    pha
-
-    ;------------------ draw caption
-    ;x-pos = (frame width - caption length) / 2
-
-    ; load caption-length
-    ldx #0
-    ldy #7
-    lda #m_temp
-    jsr k_indfet
-    sta m_mystack2
-
-    sec
-    lda m_mystack
-    sbc m_mystack2
-    sta arg1
-
-    bcs +
-    dec arg1+1
-
-    clc
-    lda arg1+1
-    lsr             ;sets the carry flag, if lowest bit was a 1
-    sta arg1+1
-
-    lda arg1
-    bcs +           
-    lsr             ;if lsr did not push lowest-bit 1 out, just shift-right the LB as well
-    sta arg1
-    jmp ++
-
-+   lsr             ;if lsr did push a 1-bit to carry, set that 1 as highest bit on the LB
-    and #128
-    sta arg1
-
-    ; arg1 contains the x/y-pos of the caption
-
-    ; load address of caption-string
-++  ldy #8
-    dec m_mystack2     ;m_mystack2 holds length of the caption. decrease by 1 to have a correct stop condition
-
--   ldx #0
-    lda #m_temp
-    jsr k_indfet
     
-    jsr $ffd2
-    iny
-    dec m_mystack2
-    bpl -
-
-
-    ; add right border offset    
-    pla
-    sta arg1+1
-    pla
-    sta arg1
-
-skip    clc
-    lda arg1
-    adc m_mystack
-    sta arg1
-
     jsr k_primm
     !pet "Before draw top-right corner"
     !byte 0
 
+    clc
+    lda arg1
+    adc m_mystack
+    sta arg1
 
     bcc +
     inc arg1+1
 
-    lda #$6e
++   lda #$6e
     sta arg2
 
     ; draw top-right corner border element
-+   jsr vmw
-
+    jsr vmw
+    
     ; remove right border offset
     sec
     lda arg1
@@ -312,7 +248,7 @@ skip    clc
     dex
     dex ; repeat for (height -2) times
 
--   beq++
+-   beq ++
 
     stx m_mystack2
 
@@ -322,9 +258,9 @@ skip    clc
     adc #80
     sta arg1
 
-    jsr k_primm
-    !pet "Before draw left border element. "
-    !byte 0
+;    jsr k_primm
+;    !pet "Before draw left border element. "
+;    !byte 0
 
     bcc +
     inc arg1+1
@@ -338,9 +274,9 @@ skip    clc
     adc m_mystack
     sta arg1
 
-    jsr k_primm
-    !pet "Before draw right border element. "
-    !byte 0
+;    jsr k_primm
+;    !pet "Before draw right border element. "
+;    !byte 0
 
     bcc +
     inc arg1+1
@@ -357,9 +293,9 @@ skip    clc
     bcs +
     dec arg1+1
 
-    ldx m_mystack2
++   ldx m_mystack2
 
-+   dex
+    dex
     jmp -
 
     ; draw bottom-left corner element
@@ -394,17 +330,15 @@ skip    clc
 +   lda #$40 ; bottom element
     sta arg2
 
-    ; arg 3: times to fill (subtract 1 to have the correct value)
+    ; arg 3: chars to fill (subtract 1 to have the correct value)
     lda m_mystack
+    
+    sec
     sbc #1
     sta arg3
 
     lda #0
     sta arg3+1
-
-    jsr k_primm
-    !pet "before draw bottom line"
-    !byte 0
 
     ; fill line
     jsr vmf
@@ -421,6 +355,14 @@ skip    clc
 
     bcc +
     inc arg1+1
+
+    sec
+    lda arg1
+    sbc #1
+    sta arg1
+
+    bcs +
+    dec arg1+1
 
 +   lda #$7d
     sta arg2
@@ -1257,14 +1199,9 @@ vmc ; copy VRAM to VRAM
 ;++		jmp complex_instruction_shared_exit
 
 vmw ; VRAM location = value
-;		jsr simple_instruction_shared_entry	; >> linnum, X
-
         ldy arg1
         ldx arg1+1
 
         lda arg2
-
-;		txa
-;		ldy linnum
-;		ldx linnum + 1
-		jmp A_to_vram_XXYY
+		
+        jmp A_to_vram_XXYY
