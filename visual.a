@@ -1,4 +1,4 @@
-!macro message {!pet "Visual Basic Extension installed"}
+!macro message {!pet "Visual Extension for Basic 7 installed"}
 
 	!to "visual.bin", cbm
 
@@ -121,16 +121,17 @@ f_border_bottom_right       = $7d
     jmp menu_up
 
     ;sys dec("1315")
-    ;jmp draw_form_element
+    ;jmp draw_form_element_start
 
 
-draw_form_element
+draw_form_element_start
     ; get offset of current form-element
     lda m_form_offset
     sta m_temp
     lda m_form_offset+1
     sta m_temp+1
 
+draw_form_element_next
     ; get element-type (at element-offset +1)
     ldx #0
     ldy #1
@@ -139,13 +140,116 @@ draw_form_element
 
     cmp #1
     bne +
+;    jsr k_primm
+;    !pet "Draw Frame"
+;    !byte 0
     jmp draw_frame
+    
++   cmp #2
+    bne +
+;    jsr k_primm
+;    !pet "Draw Label"
+;    !byte 0
+    jmp draw_label
+
++   cmp #$FF
+    bne +
+    jmp ++
 
     ; if type=frame then goto draw_frame
 +   jsr k_primm
     !pet "Unknown UI-Element"
     !byte 0
-    rts
+
+++  rts
+
+
+draw_label
+    ; m_temp contains offset to current form element
+    ldx #0
+    ldy #2
+    lda #m_temp
+    jsr k_indfet
+
+    sta arg1
+
+    lda #0
+    sta arg1+1
+
+    ; load ypos
+    ldx #0
+    ldy #3
+    lda #m_temp
+    jsr k_indfet
+
+    ; ypos * 80 
+    tax    ; use y as counter, how often we need to add 80 to the offset.
+-   beq ++                      ; if zero, we're done
+
+    clc
+    lda arg1
+    adc #80                    ;add 80 offset per y-koordinate
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   dex
+    jmp -
+    
+    ; write caption-string to vram
+    ; store length in m_mystack
+++  ldx #0
+    ldy #5
+    lda #m_temp
+    jsr k_indfet
+    sta m_mystack
+
+    ; store address of current char
+    ldy #6
+    sty m_mystack2
+
+-   ldx #0
+    lda #m_temp
+    jsr k_indfet
+    sta arg2
+
+    jsr vmw
+
+    ; increase arg1 to print to next screen-position
+    inc arg1
+    bne +
+    inc arg1+1
+
+    ; increase y to fetch next byte from caption string
++   ldy m_mystack2
+    iny
+    sty m_mystack2
+
+    dec m_mystack
+    bne -
+
+
+    ;before ending, set m_temp to the first byte after this one's definition.
+    ;length of this definition is 5+length of caption string (stored in #6)
+    ldx #0
+    ldy #5
+    lda #m_temp
+    jsr k_indfet
+
+    clc
+    adc m_temp
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   clc
+    adc #5
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   jmp draw_form_element_next
 
 draw_frame
     ; m_temp contains offset to current form element
@@ -307,9 +411,6 @@ draw_frame
 
     jmp -
 
-
-
-
     ; draw bottom-left corner element
     ; add 80 to previous address
 ++  clc
@@ -359,7 +460,27 @@ draw_frame
 
     jsr vmw
 
-    rts
+    ;before ending, set m_temp to the first byte after this one's definition.
+    ;length of this definition is 8+length of caption string (stored in #7)
+    ldx #0
+    ldy #7
+    lda #m_temp
+    jsr k_indfet
+
+    clc
+    adc m_temp
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   clc
+    adc #8
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
+   
++   jmp draw_form_element_next
 
 
 .draw_horizontal_line
@@ -414,10 +535,10 @@ menu_up
 menu_down
     jsr .dehighlight_menuentry
 
-    lda m_menu_entries
-    sta m_mystack
-    dec m_mystack
-    dec m_mystack
+    ldy m_menu_entries
+    dey
+    dey
+    sty m_mystack
 
     inc m_menuentry_selected
 
@@ -853,6 +974,8 @@ hide_menu
     rts
 
 initialize
+
+
     jsr .clear_memory
     jsr .read_charset_address
     jsr .read_attribute_address
@@ -860,7 +983,7 @@ initialize
     jsr .copy_menu_to_vram
     jsr .load_offsets
     jsr .setup_screen
-    jsr draw_form_element
+    jsr draw_form_element_start
     jsr .display_top_menu
     
 
@@ -882,8 +1005,11 @@ initialize
 
     ldy m_topmenu_length
     sty arg3
+    
     lda #0
     sta arg3+1
+    sta arg5
+    sta arg6
 
     ldx #$1;
     stx arg4
