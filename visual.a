@@ -60,6 +60,13 @@ o_topmenu_length            = 3
 o_menu_height               = 4
 o_menu_width                = 5
 
+f_border_horizontal         = $40
+f_border_vertical           = $5d
+f_border_top_left           = $70
+f_border_top_right          = $6e
+f_border_bottom_left        = $6d
+f_border_bottom_right       = $7d
+
 ; file format
 ; 0-1: format bytes (VM)
 ; 2-3: length of menu-visuals (that's what needs to be copied to vram, starting at byte #4)
@@ -114,7 +121,7 @@ o_menu_width                = 5
     jmp menu_up
 
     ;sys dec("1315")
-    jmp draw_form_element
+    ;jmp draw_form_element
 
 
 draw_form_element
@@ -132,9 +139,6 @@ draw_form_element
 
     cmp #1
     bne +
-    jsr k_primm
-    !pet "Drawing Frame"
-    !byte 0
     jmp draw_frame
 
     ; if type=frame then goto draw_frame
@@ -196,17 +200,32 @@ draw_frame
     jmp -    
 
     ; top-left corner character
-++  lda #$70
+++  lda #f_border_top_left
     sta arg2
 
     ; draw top-left corner border element
     jsr vmw
-    
-    jsr k_primm
-    !pet "Before draw top-right corner"
-    !byte 0
 
+    ; add 1 to the target addres and draw horizontal line
     clc
+    lda arg1
+    adc #1
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   jsr .draw_horizontal_line
+
+    ; subtract 1 from the target address to that the width-value in m_mystack is right for drawing the border element on the right
+    sec
+    lda arg1
+    sbc #1
+    sta arg1
+    bcs +
+    dec arg1+1
+
++   clc
     lda arg1
     adc m_mystack
     sta arg1
@@ -214,7 +233,7 @@ draw_frame
     bcc +
     inc arg1+1
 
-+   lda #$6e
++   lda #f_border_top_right
     sta arg2
 
     ; draw top-right corner border element
@@ -229,14 +248,14 @@ draw_frame
     bcs +
     dec arg1+1
     
-
+;---------------- left and right border -----------------------
     ; draw left border. starts one below the previous address and writes a single byte per line until height is reached
     ; arg1 = previous arg1+80
     ; arg2 = character for border element
     ; repeat for height-2 times (X-reg)
 
     ; arg2
-+   ldy #$5d ; character for border left and right
++   ldy #f_border_vertical
     sty arg2
 
     ; load height for nr of repetitions
@@ -244,23 +263,18 @@ draw_frame
     ldy #5
     lda #m_temp
     jsr k_indfet
-    tax
-    dex
-    dex ; repeat for (height -2) times
+
+    sta m_mystack2 ; store height
+    dec m_mystack2 ; reduce by 2 (top- and bottom border)
+    dec m_mystack2
 
 -   beq ++
-
-    stx m_mystack2
 
     ; left border
     clc
     lda arg1
     adc #80
     sta arg1
-
-;    jsr k_primm
-;    !pet "Before draw left border element. "
-;    !byte 0
 
     bcc +
     inc arg1+1
@@ -273,10 +287,6 @@ draw_frame
     lda arg1
     adc m_mystack
     sta arg1
-
-;    jsr k_primm
-;    !pet "Before draw right border element. "
-;    !byte 0
 
     bcc +
     inc arg1+1
@@ -293,10 +303,12 @@ draw_frame
     bcs +
     dec arg1+1
 
-+   ldx m_mystack2
++   dec m_mystack2
 
-    dex
     jmp -
+
+
+
 
     ; draw bottom-left corner element
     ; add 80 to previous address
@@ -305,20 +317,15 @@ draw_frame
     adc #80
     sta arg1
 
-    jsr k_primm
-    !pet "before draw bottom-left element"
-    !byte 0
-
     bcc +
     inc arg1+1
 
-+   lda #$6d ; bottom-left element
++   lda #f_border_bottom_left
     sta arg2
 
     jsr vmw
 
-    ; draw bottom line. VMF address+1, char-code $cd, (width-1) times
-    ; increase address by 1
+    ;------ draw bottom line ---------
     clc
     lda arg1
     adc #1
@@ -327,36 +334,19 @@ draw_frame
     bcc +
     inc arg1+1
 
-+   lda #$40 ; bottom element
-    sta arg2
-
-    ; arg 3: chars to fill (subtract 1 to have the correct value)
-    lda m_mystack
-    
-    sec
-    sbc #1
-    sta arg3
-
-    lda #0
-    sta arg3+1
-
-    ; fill line
-    jsr vmf
++   jsr .draw_horizontal_line
 
     ; draw bottom-right corner
+    ; set arg1 to the right value so that m_mystack correctly provides the offset for the border to the right
     clc
     lda arg1
     adc m_mystack
     sta arg1
 
-    jsr k_primm
-    !pet "before draw bottom-right corner"
-    !byte 0
-
     bcc +
     inc arg1+1
 
-    sec
++   sec
     lda arg1
     sbc #1
     sta arg1
@@ -364,13 +354,42 @@ draw_frame
     bcs +
     dec arg1+1
 
-+   lda #$7d
++   lda #f_border_bottom_right
     sta arg2
 
     jsr vmw
 
     rts
 
+
+.draw_horizontal_line
+    ;arg1 has to be set before calling this method
+
++   lda #f_border_horizontal
+    sta arg2
+
+    ; arg 3: chars to fill (subtract 2 to have the correct value)
+    ldx #0
+    ldy #4
+    lda #m_temp
+    jsr k_indfet
+    sta arg3
+ 
+    sec
+    lda arg3
+    sbc #2
+    bcs +
+    dec arg3+1
+    
++   ldy #0
+    sty arg2+1
+    sty arg3+1
+    sty arg4
+    sty arg5
+    sty arg6
+
+    ; fill line
+    jmp vmf
 
 ; ---------------------------------- MENU NAVIGATION ---------------------------
 menu_up
@@ -841,7 +860,9 @@ initialize
     jsr .copy_menu_to_vram
     jsr .load_offsets
     jsr .setup_screen
+    jsr draw_form_element
     jsr .display_top_menu
+    
 
     rts
 
@@ -891,13 +912,13 @@ initialize
 
     jsr vmf
     
-    ;fill background: vmf 0,63 ($3F),2000 ($7d0)
+    ;fill background: vmf 0,32 ($20),2000 ($7d0)
     ldy #$00
     sty arg1
     lda #$00
     sta arg1+1
 
-    ldy #$3F
+    ldy #$20
     sty arg2
     lda #$00
     sta arg2+1
@@ -1112,7 +1133,7 @@ vmf ; fill VRAM with value
 ;		jsr complex_instruction_shared_entry	; > AAYY = arg3
 
 		; decrement byte counter because the first one will be written manually
-		tya	; take a look at low byte
+		lda arg3	; take a look at low byte
 		bne +
 		dec arg3 + 1
 +		dec arg3
