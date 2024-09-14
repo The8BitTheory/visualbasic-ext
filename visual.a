@@ -164,7 +164,6 @@ draw_form_element_next
 ;    jsr k_primm
 ;    !pet "Draw Frame"
 ;    !byte 0
-    sta $400
     jmp draw_frame
     
 +   cmp #2
@@ -172,13 +171,7 @@ draw_form_element_next
 ;    jsr k_primm
 ;    !pet "Draw Label"
 ;    !byte 0
-    sta $401
     jmp draw_label
-
-+   cmp #3
-    bne +
-    sta $402
-    jmp draw_input
 
 +   cmp #$FF
     bne +
