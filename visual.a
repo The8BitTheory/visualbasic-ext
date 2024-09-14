@@ -1,4 +1,4 @@
-!macro message {!pet "Visual Basic Extension installed"}
+!macro message {!pet "Visual Extension for Basic 7 installed"}
 
 	!to "visual.bin", cbm
 
@@ -60,6 +60,13 @@ o_topmenu_length            = 3
 o_menu_height               = 4
 o_menu_width                = 5
 
+f_border_horizontal         = $40
+f_border_vertical           = $5d
+f_border_top_left           = $70
+f_border_top_right          = $6e
+f_border_bottom_left        = $6d
+f_border_bottom_right       = $7d
+
 ; file format
 ; 0-1: format bytes (VM)
 ; 2-3: length of menu-visuals (that's what needs to be copied to vram, starting at byte #4)
@@ -85,6 +92,27 @@ o_menu_width                = 5
 ; f6: has menu
 ; f7: caption-length
 ; f8-n: caption-string
+
+; LABEL
+; f0: ID
+; f1: ui-element-type-id 2
+; f2: x-pos
+; f3: y-pos
+; f4: width
+; f5: height
+; f6: length of caption string
+; f7-n: caption string
+
+; INPUT
+; f0: ID
+; f1: ui-element-type-id 3
+; f2: x-pos
+; f3: y-pos
+; f4: width
+; f5: height
+; f6: max-length of text content
+; f7-n: text content string
+
 
 
 ; end: VE+00
@@ -114,16 +142,17 @@ o_menu_width                = 5
     jmp menu_up
 
     ;sys dec("1315")
-    jmp draw_form_element
+    ;jmp draw_form_element_start
 
 
-draw_form_element
+draw_form_element_start
     ; get offset of current form-element
     lda m_form_offset
     sta m_temp
     lda m_form_offset+1
     sta m_temp+1
 
+draw_form_element_next
     ; get element-type (at element-offset +1)
     ldx #0
     ldy #1
@@ -132,16 +161,222 @@ draw_form_element
 
     cmp #1
     bne +
-    jsr k_primm
-    !pet "Drawing Frame"
-    !byte 0
+;    jsr k_primm
+;    !pet "Draw Frame"
+;    !byte 0
+    sta $400
     jmp draw_frame
+    
++   cmp #2
+    bne +
+;    jsr k_primm
+;    !pet "Draw Label"
+;    !byte 0
+    sta $401
+    jmp draw_label
+
++   cmp #3
+    bne +
+    sta $402
+    jmp draw_input
+
++   cmp #$FF
+    bne +
+    jmp ++
 
     ; if type=frame then goto draw_frame
-+   jsr k_primm
++   sta $408
+    jsr k_primm
     !pet "Unknown UI-Element"
     !byte 0
-    rts
+    
+    adc #49
+    
+    jsr k_chrout
+
+++  rts
+
+draw_input
+    ; m_temp contains offset to current form element
+    ldx #0
+    ldy #2
+    lda #m_temp
+    jsr k_indfet
+    sta arg1
+
+    lda #0
+    sta arg1+1
+
+    ; load ypos
+    ldx #0
+    ldy #3
+    lda #m_temp
+    jsr k_indfet
+
+    ; ypos * 80 
+    tax    ; use y as counter, how often we need to add 80 to the offset.
+-   beq ++                      ; if zero, we're done
+
+    clc
+    lda arg1
+    adc #80                    ;add 80 offset per y-koordinate
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   dex
+    jmp -
+    
+    ; store width in m_mystack
+++  ldx #0
+    ldy #4
+    lda #m_temp
+    jsr k_indfet
+    sta m_mystack
+
+    ;5 max text-length
+    ;6 start of text
+
+    ;$1b = left bracket
+    ;$1d = right bracket
+
+    lda #$1b
+    sta arg2
+
+    jsr vmw
+
+    clc
+    lda arg1
+    adc m_mystack
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   sec
+    lda arg1
+    sbc #1
+    sta arg1
+
+    bcs +
+    dec arg1+1
+
++   lda #$1d
+    sta arg2
+
+    jsr vmw
+
+
+    ;before ending, set m_temp to the first byte after this one's definition.
+    ;length of this definition is 5+length of caption string (stored in #6)
++   ldx #0
+    ldy #5
+    lda #m_temp
+    jsr k_indfet
+
+    clc
+    adc m_temp
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   clc
+    adc #5
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   jmp draw_form_element_next
+
+
+
+draw_label
+    ; m_temp contains offset to current form element
+    ldx #0
+    ldy #2
+    lda #m_temp
+    jsr k_indfet
+
+    sta arg1
+
+    lda #0
+    sta arg1+1
+
+    ; load ypos
+    ldx #0
+    ldy #3
+    lda #m_temp
+    jsr k_indfet
+
+    ; ypos * 80 
+    tax    ; use y as counter, how often we need to add 80 to the offset.
+-   beq ++                      ; if zero, we're done
+
+    clc
+    lda arg1
+    adc #80                    ;add 80 offset per y-koordinate
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   dex
+    jmp -
+    
+    ; write caption-string to vram
+    ; store length in m_mystack
+++  ldx #0
+    ldy #5
+    lda #m_temp
+    jsr k_indfet
+    sta m_mystack
+
+    ; store address of current char
+    ldy #6
+    sty m_mystack2
+
+-   ldx #0
+    lda #m_temp
+    jsr k_indfet
+    sta arg2
+
+    jsr vmw
+
+    ; increase arg1 to print to next screen-position
+    inc arg1
+    bne +
+    inc arg1+1
+
+    ; increase y to fetch next byte from caption string
++   ldy m_mystack2
+    iny
+    sty m_mystack2
+
+    dec m_mystack
+    bne -
+
+
+    ;before ending, set m_temp to the first byte after this one's definition.
+    ;length of this definition is 5+length of caption string (stored in #6)
+    ldx #0
+    ldy #5
+    lda #m_temp
+    jsr k_indfet
+
+    clc
+    adc m_temp
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   clc
+    adc #6 ;add 6 to go one byte beyond the current form element
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   jmp draw_form_element_next
 
 draw_frame
     ; m_temp contains offset to current form element
@@ -156,6 +391,8 @@ draw_frame
     ldy #4
     lda #m_temp
     jsr k_indfet
+    
+    sec
     sbc #1
     sta m_mystack
 
@@ -194,96 +431,45 @@ draw_frame
     jmp -    
 
     ; top-left corner character
-++  lda #$70
+++  lda #f_border_top_left
     sta arg2
 
     ; draw top-left corner border element
     jsr vmw
 
-    rts
-
-    jmp skip
-
-    ;push current address to stack
-    lda arg1
-    pha
-    lda arg1+1
-    pha
-
-    ;------------------ draw caption
-    ;x-pos = (frame width - caption length) / 2
-
-    ; load caption-length
-    ldx #0
-    ldy #7
-    lda #m_temp
-    jsr k_indfet
-    sta m_mystack2
-
-    sec
-    lda m_mystack
-    sbc m_mystack2
-    sta arg1
-
-    bcs +
-    dec arg1+1
-
+    ; add 1 to the target addres and draw horizontal line
     clc
-    lda arg1+1
-    lsr             ;sets the carry flag, if lowest bit was a 1
-    sta arg1+1
-
     lda arg1
-    bcs +           
-    lsr             ;if lsr did not push lowest-bit 1 out, just shift-right the LB as well
+    adc #1
     sta arg1
-    jmp ++
-
-+   lsr             ;if lsr did push a 1-bit to carry, set that 1 as highest bit on the LB
-    and #128
-    sta arg1
-
-    ; arg1 contains the x/y-pos of the caption
-
-    ; load address of caption-string
-++  ldy #8
-    dec m_mystack2     ;m_mystack2 holds length of the caption. decrease by 1 to have a correct stop condition
-
--   ldx #0
-    lda #m_temp
-    jsr k_indfet
-    
-    jsr $ffd2
-    iny
-    dec m_mystack2
-    bpl -
-
-
-    ; add right border offset    
-    pla
-    sta arg1+1
-    pla
-    sta arg1
-
-skip    clc
-    lda arg1
-    adc m_mystack
-    sta arg1
-
-    jsr k_primm
-    !pet "Before draw top-right corner"
-    !byte 0
-
 
     bcc +
     inc arg1+1
 
-    lda #$6e
++   jsr .draw_horizontal_line
+
+    ; subtract 1 from the target address to that the width-value in m_mystack is right for drawing the border element on the right
+    sec
+    lda arg1
+    sbc #1
+    sta arg1
+    bcs +
+    dec arg1+1
+
++   clc
+    lda arg1
+    adc m_mystack
+    sta arg1
+
+    bcc +
+    inc arg1+1
+
++   lda #f_border_top_right
     sta arg2
 
     ; draw top-right corner border element
-+   jsr vmw
-
+    jsr vmw
+    
     ; remove right border offset
     sec
     lda arg1
@@ -293,14 +479,14 @@ skip    clc
     bcs +
     dec arg1+1
     
-
+;---------------- left and right border -----------------------
     ; draw left border. starts one below the previous address and writes a single byte per line until height is reached
     ; arg1 = previous arg1+80
     ; arg2 = character for border element
     ; repeat for height-2 times (X-reg)
 
     ; arg2
-+   ldy #$5d ; character for border left and right
++   ldy #f_border_vertical
     sty arg2
 
     ; load height for nr of repetitions
@@ -308,23 +494,18 @@ skip    clc
     ldy #5
     lda #m_temp
     jsr k_indfet
-    tax
-    dex
-    dex ; repeat for (height -2) times
 
--   beq++
+    sta m_mystack2 ; store height
+    dec m_mystack2 ; reduce by 2 (top- and bottom border)
+    dec m_mystack2
 
-    stx m_mystack2
+-   beq ++
 
     ; left border
     clc
     lda arg1
     adc #80
     sta arg1
-
-    jsr k_primm
-    !pet "Before draw left border element. "
-    !byte 0
 
     bcc +
     inc arg1+1
@@ -337,10 +518,6 @@ skip    clc
     lda arg1
     adc m_mystack
     sta arg1
-
-    jsr k_primm
-    !pet "Before draw right border element. "
-    !byte 0
 
     bcc +
     inc arg1+1
@@ -357,9 +534,8 @@ skip    clc
     bcs +
     dec arg1+1
 
-    ldx m_mystack2
++   dec m_mystack2
 
-+   dex
     jmp -
 
     ; draw bottom-left corner element
@@ -369,20 +545,15 @@ skip    clc
     adc #80
     sta arg1
 
-    jsr k_primm
-    !pet "before draw bottom-left element"
-    !byte 0
-
     bcc +
     inc arg1+1
 
-+   lda #$6d ; bottom-left element
++   lda #f_border_bottom_left
     sta arg2
 
     jsr vmw
 
-    ; draw bottom line. VMF address+1, char-code $cd, (width-1) times
-    ; increase address by 1
+    ;------ draw bottom line ---------
     clc
     lda arg1
     adc #1
@@ -391,44 +562,82 @@ skip    clc
     bcc +
     inc arg1+1
 
-+   lda #$40 ; bottom element
-    sta arg2
-
-    ; arg 3: times to fill (subtract 1 to have the correct value)
-    lda m_mystack
-    sbc #1
-    sta arg3
-
-    lda #0
-    sta arg3+1
-
-    jsr k_primm
-    !pet "before draw bottom line"
-    !byte 0
-
-    ; fill line
-    jsr vmf
++   jsr .draw_horizontal_line
 
     ; draw bottom-right corner
+    ; set arg1 to the right value so that m_mystack correctly provides the offset for the border to the right
     clc
     lda arg1
     adc m_mystack
     sta arg1
 
-    jsr k_primm
-    !pet "before draw bottom-right corner"
-    !byte 0
-
     bcc +
     inc arg1+1
 
-+   lda #$7d
++   sec
+    lda arg1
+    sbc #1
+    sta arg1
+
+    bcs +
+    dec arg1+1
+
++   lda #f_border_bottom_right
     sta arg2
 
     jsr vmw
 
-    rts
+    ;before ending, set m_temp to the first byte after this one's definition.
+    ;length of this definition is 8+length of caption string (stored in #7)
+    ldx #0
+    ldy #7
+    lda #m_temp
+    jsr k_indfet
 
+    clc
+    adc m_temp
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
++   clc
+    adc #8
+    sta m_temp
+    bcc +
+    inc m_temp+1
+
+   
++   jmp draw_form_element_next
+
+
+.draw_horizontal_line
+    ;arg1 has to be set before calling this method
+
++   lda #f_border_horizontal
+    sta arg2
+
+    ; arg 3: chars to fill (subtract 2 to have the correct value)
+    ldx #0
+    ldy #4
+    lda #m_temp
+    jsr k_indfet
+    sta arg3
+ 
+    sec
+    lda arg3
+    sbc #2
+    bcs +
+    dec arg3+1
+    
++   ldy #0
+    sty arg2+1
+    sty arg3+1
+    sty arg4
+    sty arg5
+    sty arg6
+
+    ; fill line
+    jmp vmf
 
 ; ---------------------------------- MENU NAVIGATION ---------------------------
 menu_up
@@ -453,10 +662,10 @@ menu_up
 menu_down
     jsr .dehighlight_menuentry
 
-    lda m_menu_entries
-    sta m_mystack
-    dec m_mystack
-    dec m_mystack
+    ldy m_menu_entries
+    dey
+    dey
+    sty m_mystack
 
     inc m_menuentry_selected
 
@@ -591,9 +800,9 @@ show_menu
     ; highlight top menuentry
     jsr .top_menu_command
 
-    ;arg2=199
+    ;arg2=192
     clc
-    lda #199
+    lda #192
     sta arg2
 
     lda #0
@@ -656,9 +865,9 @@ show_menu
 .highlight_menuentry
     jsr .menuentry_highlight_prep_1_and_3
 
-    ;arg2=199
+    ;arg2=192
     clc
-    lda #199
+    lda #192
     sta arg2
 
     lda #0
@@ -737,9 +946,9 @@ hide_menu
     ;de-highlight top-menu entry
     ;VMF 2048+MD(ME,1),128+7,MD(ME,2)
 +   jsr .top_menu_command
-    ;arg2=135
+    ;arg2=128
     clc
-    lda #135
+    lda #128
     sta arg2
 
     lda #0
@@ -793,9 +1002,9 @@ hide_menu
 .dehighlight_menuentry
     jsr .menuentry_highlight_prep_1_and_3
 
-    ;arg2=135
+    ;arg2=128
     clc
-    lda #135
+    lda #128
     sta arg2
 
     lda #0
@@ -892,6 +1101,8 @@ hide_menu
     rts
 
 initialize
+
+
     jsr .clear_memory
     jsr .read_charset_address
     jsr .read_attribute_address
@@ -899,7 +1110,9 @@ initialize
     jsr .copy_menu_to_vram
     jsr .load_offsets
     jsr .setup_screen
+    jsr draw_form_element_start
     jsr .display_top_menu
+    
 
     rts
 
@@ -919,8 +1132,11 @@ initialize
 
     ldy m_topmenu_length
     sty arg3
+    
     lda #0
     sta arg3+1
+    sta arg5
+    sta arg6
 
     ldx #$1;
     stx arg4
@@ -931,13 +1147,13 @@ initialize
 
 ; fill background, set charset1 for full screen
 .setup_screen
-    ;set all attribute ram to charset1: vmf 2048 ($800),135 ($87),2000 ($7d0)
+    ;set all attribute ram to charset1: vmf 2048 ($800),128 ($80),2000 ($7d0)
     ldy #$00
     sty arg1
     lda #$08
     sta arg1+1
 
-    ldy #$87
+    ldy #$80
     sty arg2
     lda #$00
     sta arg2+1
@@ -949,13 +1165,13 @@ initialize
 
     jsr vmf
     
-    ;fill background: vmf 0,63 ($3F),2000 ($7d0)
+    ;fill background: vmf 0,32 ($20),2000 ($7d0)
     ldy #$00
     sty arg1
     lda #$00
     sta arg1+1
 
-    ldy #$3F
+    ldy #$20
     sty arg2
     lda #$00
     sta arg2+1
@@ -1170,7 +1386,7 @@ vmf ; fill VRAM with value
 ;		jsr complex_instruction_shared_entry	; > AAYY = arg3
 
 		; decrement byte counter because the first one will be written manually
-		tya	; take a look at low byte
+		lda arg3	; take a look at low byte
 		bne +
 		dec arg3 + 1
 +		dec arg3
@@ -1257,14 +1473,9 @@ vmc ; copy VRAM to VRAM
 ;++		jmp complex_instruction_shared_exit
 
 vmw ; VRAM location = value
-;		jsr simple_instruction_shared_entry	; >> linnum, X
-
         ldy arg1
         ldx arg1+1
 
         lda arg2
-
-;		txa
-;		ldy linnum
-;		ldx linnum + 1
-		jmp A_to_vram_XXYY
+		
+        jmp A_to_vram_XXYY
